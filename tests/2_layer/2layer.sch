@@ -1,0 +1,141 @@
+EESchema Schematic File Version 4
+EELAYER 26 0
+EELAYER END
+$Descr A4 11693 8268
+encoding utf-8
+Sheet 1 1
+Title ""
+Date ""
+Rev ""
+Comp ""
+Comment1 ""
+Comment2 ""
+Comment3 ""
+Comment4 ""
+$EndDescr
+$Comp
+L Device:LED D1
+U 1 1 5C485205
+P 5350 3600
+F 0 "D1" V 5388 3483 50  0000 R CNN
+F 1 "LED" V 5297 3483 50  0000 R CNN
+F 2 "LED_THT:LED_D3.0mm" H 5350 3600 50  0001 C CNN
+F 3 "~" H 5350 3600 50  0001 C CNN
+	1    5350 3600
+	0    -1   -1   0   
+$EndComp
+$Comp
+L Device:R_Small R1
+U 1 1 5C485306
+P 5350 3200
+F 0 "R1" H 5409 3246 50  0000 L CNN
+F 1 "R_Small" H 5409 3155 50  0000 L CNN
+F 2 "Resistor_SMD:R_0402_1005Metric" H 5350 3200 50  0001 C CNN
+F 3 "~" H 5350 3200 50  0001 C CNN
+	1    5350 3200
+	1    0    0    -1  
+$EndComp
+$Comp
+L Connector:Conn_01x02_Female J1
+U 1 1 5C48541F
+P 4350 3450
+F 0 "J1" H 4244 3125 50  0000 C CNN
+F 1 "Conn_01x02_Female" H 4244 3216 50  0000 C CNN
+F 2 "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Horizontal" H 4350 3450 50  0001 C CNN
+F 3 "~" H 4350 3450 50  0001 C CNN
+	1    4350 3450
+	-1   0    0    1   
+$EndComp
+$Comp
+L power:Earth #PWR04
+U 1 1 5C485515
+P 5350 3975
+F 0 "#PWR04" H 5350 3725 50  0001 C CNN
+F 1 "Earth" H 5350 3825 50  0001 C CNN
+F 2 "" H 5350 3975 50  0001 C CNN
+F 3 "~" H 5350 3975 50  0001 C CNN
+	1    5350 3975
+	1    0    0    -1  
+$EndComp
+$Comp
+L power:Earth #PWR02
+U 1 1 5C485540
+P 4625 3675
+F 0 "#PWR02" H 4625 3425 50  0001 C CNN
+F 1 "Earth" H 4625 3525 50  0001 C CNN
+F 2 "" H 4625 3675 50  0001 C CNN
+F 3 "~" H 4625 3675 50  0001 C CNN
+	1    4625 3675
+	1    0    0    -1  
+$EndComp
+$Comp
+L power:+5V #PWR01
+U 1 1 5C485595
+P 4625 3050
+F 0 "#PWR01" H 4625 2900 50  0001 C CNN
+F 1 "+5V" H 4640 3223 50  0000 C CNN
+F 2 "" H 4625 3050 50  0001 C CNN
+F 3 "" H 4625 3050 50  0001 C CNN
+	1    4625 3050
+	1    0    0    -1  
+$EndComp
+$Comp
+L power:+5V #PWR03
+U 1 1 5C4855C0
+P 5350 3000
+F 0 "#PWR03" H 5350 2850 50  0001 C CNN
+F 1 "+5V" H 5365 3173 50  0000 C CNN
+F 2 "" H 5350 3000 50  0001 C CNN
+F 3 "" H 5350 3000 50  0001 C CNN
+	1    5350 3000
+	1    0    0    -1  
+$EndComp
+Wire Wire Line
+	4550 3350 4625 3350
+Wire Wire Line
+	4625 3350 4625 3050
+Wire Wire Line
+	4550 3450 4625 3450
+Wire Wire Line
+	4625 3450 4625 3675
+Wire Wire Line
+	5350 3000 5350 3050
+Wire Wire Line
+	5350 3300 5350 3450
+Wire Wire Line
+	5350 3750 5350 3975
+$Comp
+L power:PWR_FLAG #FLG0101
+U 1 1 5C4856DE
+P 5600 2925
+F 0 "#FLG0101" H 5600 3000 50  0001 C CNN
+F 1 "PWR_FLAG" H 5600 3099 50  0000 C CNN
+F 2 "" H 5600 2925 50  0001 C CNN
+F 3 "~" H 5600 2925 50  0001 C CNN
+	1    5600 2925
+	1    0    0    -1  
+$EndComp
+$Comp
+L power:PWR_FLAG #FLG0102
+U 1 1 5C485709
+P 4900 2925
+F 0 "#FLG0102" H 4900 3000 50  0001 C CNN
+F 1 "PWR_FLAG" H 4900 3099 50  0000 C CNN
+F 2 "" H 4900 2925 50  0001 C CNN
+F 3 "~" H 4900 2925 50  0001 C CNN
+	1    4900 2925
+	1    0    0    -1  
+$EndComp
+Wire Wire Line
+	5600 2925 5600 3050
+Wire Wire Line
+	5600 3050 5350 3050
+Connection ~ 5350 3050
+Wire Wire Line
+	5350 3050 5350 3100
+Wire Wire Line
+	4900 2925 4900 3450
+Wire Wire Line
+	4900 3450 4625 3450
+Connection ~ 4625 3450
+$EndSCHEMATC

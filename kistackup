@@ -1,0 +1,704 @@
+#!/usr/bin/env python3
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version('PangoCairo', '1.0')
+from gi.repository import Gtk, Gdk, Pango, PangoCairo
+
+import cairo
+gi.require_foreign('cairo')
+gi.require_foreign('cairo', 'Surface')
+
+import math
+import re
+import os
+import sys
+from pprint import pprint as pp
+
+FONT = "Monospace Regular 12"
+
+# taken from https://rosettacode.org/wiki/S-Expressions#Python
+dbg = False
+
+term_regex = r'''(?mx)
+    \s*(?:
+        (?P<brackl>\()|
+        (?P<brackr>\))|
+        (?P<num>\-?\d+\.\d+|\-?\d+)|
+        (?P<sq>"[^"]*")|
+        (?P<s>[^(^)\s]+)
+       )'''
+
+def parse_sexp(sexp):
+    stack = []
+    out = []
+    if dbg: print("%-6s %-14s %-44s %-s" % tuple("term value out stack".split()))
+    for termtypes in re.finditer(term_regex, sexp):
+        term, value = [(t,v) for t,v in termtypes.groupdict().items() if v][0]
+        if dbg: print("%-7s %-14s %-44r %-r" % (term, value, out, stack))
+        if   term == 'brackl':
+            stack.append(out)
+            out = []
+        elif term == 'brackr':
+            assert stack, "Trouble with nesting of brackets"
+            tmpout, out = out, stack.pop(-1)
+            out.append(tmpout)
+        elif term == 'num':
+            v = float(value)
+            if v.is_integer(): v = int(v)
+            out.append(v)
+        elif term == 'sq':
+            out.append(value[1:-1])
+        elif term == 's':
+            out.append(value)
+        else:
+            raise NotImplementedError("Error: %r" % (term, value))
+    assert not stack, "Trouble with nesting of brackets"
+    return out[0]
+
+def print_sexp(exp):
+    out = ''
+    if type(exp) == type([]):
+        out += '(' + ' '.join(print_sexp(x) for x in exp) + ')'
+    elif type(exp) == type('') and re.search(r'[\s()]', exp):
+        out += '"%s"' % repr(exp)[1:-1].replace('"', '\"')
+    else:
+        out += '%s' % exp
+    return out
+
+NO_ARG = 1
+OPT_ARG = 2
+MANDATORY_ARG = 3
+
+def parse_options(argv, expected_options):
+    opt = None
+    for o in argv:
+        if o[0] == "-":
+            if o in expected_options:
+                opt = o
+                expected_options[opt]['value'] = True
+        elif opt:
+            expected_options[opt]['value'] = o
+            opt = None
+
+def print_options(expected_options):
+    for k, v in expected_options.items():
+        arg = ''
+        if v['arg'] == OPT_ARG:
+            arg = ' [arg]'
+        elif v['arg'] == MANDATORY_ARG:
+            arg = ' <arg>'
+        print('\033[1m\t'+k+arg+'\033[0m')
+        print('\t\t'+v['description'])
+        print('')
+
+class Board:
+    def __init__(self):
+        self.sexp = None
+        self.is_loaded = False
+        self.copper_layers = 0
+        self.layers = {}
+        self.core_thicknesses = []
+
+    def load_board_file(self, board_file):
+        self.board_file = board_file
+        f = open(board_file, "r")
+        data = f.read()
+        f.close()
+        self.sexp = parse_sexp(data)
+        self.layers = self.get_layers()
+        self.is_loaded = True
+        self.default_stackup()
+        return self.sexp
+
+    def default_stackup(self):
+        self.stackup = []
+        board_prefix = os.path.splitext(os.path.basename(self.board_file))[0]+"-"
+        if (len(self.layers["cu"])==2):
+            self.stackup.append({'name': board_prefix+'F.Mask', 'type': 'Dielectric', 'thickness': 0.025})
+            self.stackup.append({'name': board_prefix+'F.Cu', 'type': 'Metal', 'thickness': 0.035})
+            self.stackup.append({'name': 'Core', 'type': 'Dielectric', 'thickness': 1.5})
+            self.stackup.append({'name': board_prefix+'B.Cu', 'type': 'Metal', 'thickness': 0.035})
+            self.stackup.append({'name': board_prefix+'B.Mask', 'type': 'Dielectric', 'thickness': 0.025})
+        else:
+            self.stackup.append({'name': board_prefix+'F.Mask', 'type': 'Dielectric', 'thickness': 0.025})
+            layer_ctr = 1
+            for i, l in enumerate(self.layers["cu"]):
+                self.stackup.append({'name': board_prefix+l, 'type': 'Metal', 'thickness': 0.035})
+                layer_ctr+=1
+                if (i<len(self.layers)-1):
+                    if (layer_ctr > 3):
+                        if (layer_ctr%4==0):
+                            self.stackup.append({'name': 'Core', 'type': 'Dielectric', 'thickness': 0.9})
+                        elif(layer_ctr%2==0):
+                            self.stackup.append({'name': 'PP', 'type': 'Dielectric', 'thickness': 0.25})
+                    else:
+                        self.stackup.append({'name': 'PP', 'type': 'Dielectric', 'thickness': 0.25})
+                layer_ctr+=1
+            self.stackup.append({'name': board_prefix+'B.Mask', 'type': 'Dielectric', 'thickness': 0.025})
+
+    def get_layers(self):
+        layers = {"cu": [], "mask": [], "silks": [], "other": []}
+        for e in self.sexp:
+            if e[0] == "layers":
+                for l in e[1:]:
+                    if l[1][-2:] == "Cu":
+                        layers["cu"].append(l[1])
+                    elif l[1][-5:] == "SilkS":
+                        layers["silks"].append(l[1])
+                    elif l[1][-4:] == "Mask":
+                        layers["mask"].append(l[1])
+                    else:
+                        layers["other"].append(l[1])
+                return layers
+        return layers
+
+class KiStackupViewer(Gtk.DrawingArea):
+    def __init__(self, board):
+        self.board = board
+        Gtk.DrawingArea.__init__(self)
+        self.layer_h = 45
+        self.left_margin=60
+        self.right_margin=10
+        self.body_w = 250
+
+        # measure font glyph
+        WIDTH, HEIGHT = 256, 256
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, WIDTH, HEIGHT)
+        ctx = cairo.Context(surface)
+
+        layout = PangoCairo.create_layout (ctx)
+        desc = Pango.font_description_from_string(FONT)
+        layout.set_font_description(desc)
+        PangoCairo.update_layout (ctx, layout)
+        layout.set_text("A", -1)
+        width, height = layout.get_size()
+        w, h = Pango.units_to_double(width), Pango.units_to_double(height)
+        self.char_w = w
+        self.char_h = h
+
+        self.table_cols=[self.char_w*5, self.char_w*13, self.char_w*13, self.char_w*16]
+        self.table_cols_names = ["#", "Layer name", "Type", "Thickness, mm"]
+
+        self.table_w = sum(self.table_cols)
+        self.table_right_margin=10
+        self.rqw = self.body_w+self.left_margin+self.right_margin+self.table_w+self.table_right_margin
+        self.rqh = self.layer_h*4
+
+        self.set_size_request(self.rqw, self.rqh)
+        self.connect('draw', self.draw_cb)
+        self.outline_width = 1
+
+    def recalc_size_request(self):
+        self.table_w = sum(self.table_cols)
+        self.table_right_margin=10
+        self.rqw = self.body_w+self.left_margin+self.right_margin+self.table_w+self.table_right_margin
+        self.rqh = (len(self.board.stackup)+5)*self.layer_h
+
+    def draw_mask_layer(self, cr, is_top, x, y, w, h):
+        cr.set_line_width(self.outline_width)
+        cr.set_source_rgb(0.1, 0.1, 0.1)
+        if (is_top):
+            cr.move_to(x, y)
+            cr.line_to(x+w/5, y)
+            cr.line_to(x+w/5, y-h/2)
+            cr.line_to(x+2*w/5, y-h/2)
+            cr.line_to(x+2*w/5, y)
+            cr.line_to(x+3*w/5, y)
+            cr.line_to(x+3*w/5, y-h/2)
+            cr.line_to(x+4*w/5, y-h/2)
+            cr.line_to(x+4*w/5, y)
+            cr.line_to(x+5*w/5, y)
+            cr.line_to(x+5*w/5, y-h/2)
+            cr.line_to(x+5*w/5-w/10-w/20, y-h/2)
+            cr.line_to(x+5*w/5-w/10-w/20, y-h)
+            cr.line_to(x+3*w/5-w/20, y-h)
+            cr.line_to(x+3*w/5-w/20, y-h/2)
+            cr.line_to(x+3*w/5-w/10-w/20, y-h/2)
+            cr.line_to(x+3*w/5-w/10-w/20, y-h)
+            cr.line_to(x+w/10+w/20, y-h)
+            cr.line_to(x+w/10+w/20, y-h/2)
+            cr.line_to(x, y-h/2)
+        else:
+            cr.move_to(x, y-h)
+            cr.line_to(x+w/5, y-h)
+            cr.line_to(x+w/5, y-h/2)
+            cr.line_to(x+2*w/5, y-h/2)
+            cr.line_to(x+2*w/5, y-h)
+            cr.line_to(x+3*w/5, y-h)
+            cr.line_to(x+3*w/5, y-h/2)
+            cr.line_to(x+4*w/5, y-h/2)
+            cr.line_to(x+4*w/5, y-h)
+            cr.line_to(x+5*w/5, y-h)
+            cr.line_to(x+5*w/5, y-h/2)
+            cr.line_to(x+5*w/5-w/10-w/20, y-h/2)
+            cr.line_to(x+5*w/5-w/10-w/20, y)
+            cr.line_to(x+3*w/5-w/20, y)
+            cr.line_to(x+3*w/5-w/20, y-h/2)
+            cr.line_to(x+3*w/5-w/10-w/20, y-h/2)
+            cr.line_to(x+3*w/5-w/10-w/20, y)
+            cr.line_to(x+w/10+w/20, y)
+            cr.line_to(x+w/10+w/20, y-h/2)
+            cr.line_to(x, y-h/2)
+            
+        cr.close_path()
+        cr.stroke()
+
+    def draw_top_bottom(self, cr, is_top, x, y, w, h):
+        x=float(x)
+        y=float(y)
+        w=float(w)
+        h=float(h)
+
+        cr.set_line_width(1)
+        cr.set_source_rgb(0.8, 0.1, 0.1)
+
+        offset = h/3.0
+        sx = x+w/5.0-offset
+        cx = sx
+        while cx<(sx+w/5.0+offset):
+            if (cx>=x+w/5.0) and (cx+offset<=x+2*w/5.0):
+                cr.move_to(cx, y-h/3)
+                cr.line_to(cx+offset, y-2*h/3)
+                cr.stroke()
+            elif (cx<x+w/5.0):
+                l = x+w/5.0-cx
+                ty = l
+                cr.move_to(x+w/5, y-h/3-ty)
+                cr.line_to(cx+offset, y-2*h/3)
+                cr.stroke()
+            elif (cx+offset>x+2*w/5.0):
+                l = cx+offset-(x+2*w/5.0)
+
+                ty = offset-l
+                cr.move_to(cx, y-h/3)
+                cr.line_to(x+2*w/5.0, y-h/3-ty)
+                cr.stroke()
+
+            cx+=offset/3.0
+
+        sx = x+3*w/5.0-offset
+        cx = sx
+        while cx<(sx+w/5.0+offset):
+            if (cx>=x+3*w/5.0) and (cx+offset<=x+4*w/5.0):
+                cr.move_to(cx, y-h/3)
+                cr.line_to(cx+offset, y-2*h/3)
+                cr.stroke()
+            elif (cx<x+3*w/5.0):
+                l = x+3*w/5.0-cx
+                ty = l
+                cr.move_to(x+3*w/5, y-h/3-ty)
+                cr.line_to(cx+offset, y-2*h/3)
+                cr.stroke()
+            elif (cx+offset>x+4*w/5.0):
+                l = cx+offset-(x+4*w/5.0)
+
+                ty = offset-l
+                cr.move_to(cx, y-h/3)
+                cr.line_to(x+4*w/5.0, y-h/3-ty)
+                cr.stroke()
+
+            cx+=offset/3.0
+
+        cr.set_line_width(self.outline_width)
+        #cr.set_source_rgb(0.1, 0.1, 0.1)
+        cr.move_to(x+w/5, y-h/3)
+        cr.line_to(x+w/5, y-2*h/3)
+        cr.line_to(x+2*w/5, y-2*h/3)
+        cr.line_to(x+2*w/5, y-h/3)
+        cr.close_path()
+        cr.stroke()
+        
+        cr.move_to(x+3*w/5, y-h/3)
+        cr.line_to(x+3*w/5, y-2*h/3)
+        cr.line_to(x+4*w/5, y-2*h/3)
+        cr.line_to(x+4*w/5, y-h/3)
+        cr.close_path()
+        cr.stroke()
+
+
+    def draw_cu(self, cr, is_top, x, y, w, h):
+
+        cr.set_line_width(1)
+        cr.set_source_rgb(0.8, 0.1, 0.1)
+
+        offset = h/3.0
+        sx = x-offset
+        cx = sx
+        while cx<(sx+w+offset):
+            if (cx>=x) and (cx+offset<=x+w):
+                cr.move_to(cx, y-h/3)
+                cr.line_to(cx+offset, y-2*h/3)
+                cr.stroke()
+            elif (cx<x):
+                l = x-cx
+                ty = l
+                cr.move_to(x, y-h/3-ty)
+                cr.line_to(cx+offset, y-2*h/3)
+                cr.stroke()
+            elif (cx+offset>x+w):
+                l = cx+offset-(x+w)
+
+                ty = offset-l
+                cr.move_to(cx, y-h/3)
+                cr.line_to(x+w, y-h/3-ty)
+                cr.stroke()
+
+            cx+=offset/3.0
+
+        cr.set_line_width(self.outline_width)
+        cr.move_to(x, y-h/3)
+        cr.line_to(x, y-2*h/3)
+        cr.line_to(x+w, y-2*h/3)
+        cr.line_to(x+w, y-h/3)
+        cr.close_path()
+        cr.stroke()
+        angle = 45
+        offset = h/3*math.sin(angle*math.pi/180)
+
+    def draw_substrate(self, cr, is_top, x, y, w, h):
+        cr.set_line_width(self.outline_width)
+        cr.set_source_rgb(0.1, 0.1, 0.1)
+        cr.move_to(x, y-h/10)
+        cr.line_to(x, y-9*h/10)
+        cr.line_to(x+w, y-9*h/10)
+        cr.line_to(x+w, y-h/10)
+        cr.close_path()
+        cr.stroke()
+
+    def draw_table(self, cr, stackup, preview=True):
+
+        n_layers = len(stackup)
+        cols = self.table_cols
+        cols_names = self.table_cols_names
+        layout = PangoCairo.create_layout (cr)
+        attrlist = Pango.AttrList()
+        spacing = Pango.Attribute()
+        desc = Pango.font_description_from_string(FONT)
+        layout.set_font_description(desc)
+        s = layout.get_spacing()
+        w=self.table_w
+        h=len(stackup)*self.layer_h
+        x=self.left_margin+self.body_w+self.right_margin
+        y=4*self.layer_h
+
+        preview_text = " (Preview)"
+        if (not preview):
+            preview_text = ""
+        title="Layer Stackup%s. PCB: %s"%(preview_text, os.path.splitext(os.path.basename(self.board.board_file))[0],)
+        layout.set_text(title, -1)
+        PangoCairo.update_layout (cr, layout)
+        cr.save()
+        cr.set_source_rgb (0, 0, 0)
+        cr.move_to((self.rqw-len(title)*self.char_w)/2.0, self.char_h)
+        PangoCairo.show_layout (cr, layout)
+        cr.restore()
+
+        total_thickness = 0.0
+        for l in stackup:
+            total_thickness+=l["thickness"]
+
+        info="Number of layers: %i\nTotal thickness: %f mm"%(len(stackup), total_thickness)
+        layout.set_text(info, -1)
+        PangoCairo.update_layout (cr, layout)
+        cr.save()
+        cr.set_source_rgb (0, 0, 0)
+        cr.move_to(20, self.char_h*3)
+        PangoCairo.show_layout (cr, layout)
+        cr.restore()
+
+        cr.set_line_width(1)
+        cr.set_source_rgb(0.1, 0.1, 0.1)
+        yoffset = h/n_layers
+        xmargin =cols[0]/3
+        ymargin=yoffset/3
+
+        layout.set_text("#", -1)
+        PangoCairo.update_layout (cr, layout)
+        cr.save()
+        cr.set_source_rgb (0, 0, 0)
+        cr.move_to(x+xmargin, y-yoffset+ymargin)
+        PangoCairo.show_layout (cr, layout)
+        cr.restore()
+
+        name_max_w = cols[1]
+
+        
+        for l in range(n_layers):
+            cr.move_to(x, y+yoffset*(l+1))
+            cr.line_to(x, y+yoffset*(l))
+            cr.line_to(x+w, y+yoffset*(l))
+            cr.line_to(x+w, y+yoffset*(l+1))
+            cr.stroke()
+
+            xofft = x
+            layout.set_text("%i"%(l+1), -1)
+            PangoCairo.update_layout (cr, layout)
+            cr.save()
+            cr.set_source_rgb (0, 0, 0)
+            cr.move_to(x+xmargin, y+yoffset*l+ymargin)
+            PangoCairo.show_layout (cr, layout)
+            cr.restore()
+            xofft+=cols[0]
+
+            name_w = (len(stackup[l]['name'])+3)*self.char_w
+            if (name_w>name_max_w):
+                name_max_w = name_w
+                cols[1] = name_w
+            layout.set_text(stackup[l]['name'], -1)
+            PangoCairo.update_layout (cr, layout)
+            cr.save()
+            cr.set_source_rgb (0, 0, 0)
+            cr.move_to(xofft+xmargin, y+yoffset*l+ymargin)
+            PangoCairo.show_layout (cr, layout)
+            cr.restore()
+            xofft+=cols[1]
+
+            layout.set_text(stackup[l]['type'], -1)
+            PangoCairo.update_layout (cr, layout)
+            cr.save()
+            cr.set_source_rgb (0, 0, 0)
+            cr.move_to(xofft+xmargin, y+yoffset*l+ymargin)
+            PangoCairo.show_layout (cr, layout)
+            cr.restore()
+            xofft+=cols[2]
+
+            layout.set_text('%f'%(stackup[l]['thickness'],), -1)
+            PangoCairo.update_layout (cr, layout)
+            cr.save()
+            cr.set_source_rgb (0, 0, 0)
+            cr.move_to(xofft+xmargin, y+yoffset*l+ymargin)
+            PangoCairo.show_layout (cr, layout)
+            cr.restore()
+            xofft+=cols[3]
+
+        xofft = x
+        for i, cn in enumerate(cols_names):
+            layout.set_text(cn, -1)
+            PangoCairo.update_layout (cr, layout)
+            cr.save()
+            cr.set_source_rgb (0, 0, 0)
+            cr.move_to(xofft+xmargin, y-yoffset+ymargin)
+            PangoCairo.show_layout (cr, layout)
+            cr.restore()
+            xofft+=cols[i]
+            cr.move_to(xofft, y-yoffset)
+            cr.line_to(xofft, y+h)
+            cr.stroke()
+
+        self.recalc_size_request()
+        self.set_size_request(self.rqw, self.rqh)
+        cr.set_line_width(1)
+        cr.set_source_rgb(0.1, 0.1, 0.1)
+        yoffset = h/n_layers
+        cr.move_to(x, y)
+        cr.line_to(x, y-yoffset)
+        cr.line_to(x+w, y-yoffset)
+        cr.line_to(x+w, y)
+
+
+        cr.move_to(x, y+h)
+        cr.line_to(x+w, y+h)
+        cr.stroke()
+
+    def draw_cb(self, widget, cr, preview=True):
+        if self.board.is_loaded == False:
+            return
+
+        copper_layers = len(self.board.layers["cu"])
+        mask_layers = 2
+        substrate_layers = copper_layers - 1
+        total_layers = copper_layers+mask_layers+substrate_layers
+        layer_h = self.layer_h#(self.rqh - hmargin*2)/(total_layers)
+        wmargin = self.left_margin
+        hmargin = 4*layer_h
+        core_layers = total_layers/2-1
+
+        w = self.body_w
+
+        for l in range(0, total_layers):
+            if l == 0:
+                self.draw_mask_layer(cr, True, wmargin, hmargin+layer_h, w, layer_h)
+            elif l == 1:
+                self.draw_top_bottom(cr, True, wmargin, hmargin+layer_h*2, w, layer_h)
+            elif l == total_layers-2:
+                self.draw_top_bottom(cr, True, wmargin, hmargin+layer_h*(total_layers-1), w, layer_h)
+            elif l == total_layers-1:
+                self.draw_mask_layer(cr, False, wmargin, hmargin+layer_h*(total_layers), w, layer_h)
+            elif l%2==0:
+                #substrate layer
+                self.draw_substrate(cr, True, wmargin, hmargin+layer_h*(l+1), w, layer_h)
+            else:
+                #copper layer
+                self.draw_cu(cr, True, wmargin, hmargin+layer_h*(l+1), w, layer_h)
+            #print(l)
+
+        self.draw_table(cr, self.board.stackup, preview)
+
+    def save_stackup_file(self, filename):
+        a4w = 210
+        a4h = 297
+        a4w_in = a4w/25.4
+        a4h_in = a4h/25.4
+        surface = cairo.PDFSurface(filename, a4h_in*1.5*72, a4w_in*1.5*72)
+        ctx = cairo.Context(surface)
+        self.draw_cb(None, ctx, False)
+        ctx.show_page()
+
+class KiStackupEditor(Gtk.Window):
+    def __init__(self, kicad_pcb_file):
+        self.board = Board()
+        Gtk.Window.__init__(self, title="KiStackup editor")
+
+        mb = Gtk.MenuBar()
+
+        filemenu = Gtk.Menu()
+        filem = Gtk.MenuItem(label="File")
+        filem.set_submenu(filemenu)
+
+        #openm = Gtk.MenuItem(label="_Open")
+        
+        acgroup = Gtk.AccelGroup()
+        self.add_accel_group(acgroup)
+        openm = Gtk.MenuItem(label="Open")
+        openm.add_accelerator("activate", acgroup, ord('O'), 
+                              Gdk.ModifierType.CONTROL_MASK, Gtk.AccelFlags.VISIBLE)
+        openm.connect("activate", self.on_file_clicked)
+        filemenu.append(openm)
+
+        plotm = Gtk.MenuItem(label="Plot")
+        plotm.connect("activate", self.on_plot_clicked)
+        filemenu.append(plotm)
+
+        exitm = Gtk.MenuItem(label="Exit")
+        exitm.connect("activate", Gtk.main_quit)
+        filemenu.append(exitm)
+        
+        mb.append(filem)
+
+        vbox = Gtk.VBox(homogeneous=False, spacing=2)
+        vbox.pack_start(mb, False, False, 0)
+
+        hbox = Gtk.HBox(homogeneous=False, spacing=2)
+        self.viewer = KiStackupViewer(self.board)
+        vbox.pack_start(hbox, False, False, 0)
+        hbox.pack_start(self.viewer, True, True, 0)
+        hbox.pack_start(Gtk.VSeparator(), False, False, 0)
+        #spacer_box=Gtk.VBox(homogeneous=False, spacing=2)
+        #spacer_box.set_size_request(2, 0)
+        #hbox.pack_start(spacer_box, False, False, 0)
+
+        self.editor_vbox = Gtk.VBox(homogeneous=False, spacing=2)
+        hbox.pack_start(self.editor_vbox, True, True, 4)
+        self.hbox = hbox
+        
+        if (kicad_pcb_file != None):
+            self.board.load_board_file(kicad_pcb_file)
+            self.populate_editor()
+
+        self.add(vbox)
+
+    def populate_editor(self):
+        children = self.editor_vbox.get_children()
+        for c in children:
+           self.editor_vbox.remove(c)
+           c.destroy()
+
+        vbox = Gtk.VBox()
+        vbox.set_size_request(0,160)
+        self.editor_vbox.pack_start(vbox, False, False, 0)
+        hbox = Gtk.HBox(homogeneous=True, spacing=2)
+        self.editor_vbox.pack_start(hbox, False, False, 0)
+        hbox.pack_start(Gtk.Label(label="Layer name"), False, False, 0)
+        hbox.pack_start(Gtk.Label(label="Type"), False, False, 0)
+        hbox.pack_start(Gtk.Label(label="Thickness"), False, False, 0)
+
+        separator = Gtk.HSeparator()
+        self.editor_vbox.pack_start(separator, False, False, 0)
+        for i, l in enumerate(self.board.stackup):
+            hbox = Gtk.HBox(homogeneous=True, spacing=2)
+            self.editor_vbox.pack_start(hbox, False, False, 0)
+            hbox.pack_start(Gtk.Label(label=l["name"]), False, False, 0)
+            hbox.pack_start(Gtk.Label(label=l["type"]), False, False, 0)
+            entry = Gtk.Entry()
+            entry.ctr = i
+            entry.set_width_chars(10)
+            entry.connect('changed', self.on_entry_changed)
+            entry.set_text("%f"%(l["thickness"],))
+            hbox.pack_start(entry, False, False, 0)
+            vbox = Gtk.VBox()
+            vbox.set_size_request(0,7)
+            self.editor_vbox.pack_start(vbox, False, False, 0)
+        self.show_all()
+
+
+    def on_entry_changed(self, entry):
+        try:
+            val = float(entry.get_text())
+            #print(val)
+            self.board.stackup[entry.ctr]["thickness"] = val
+            self.viewer.queue_draw()
+        except:
+            entry.set_text("")
+            
+    def add_filters(self, dialog):
+        filter_pcb = Gtk.FileFilter()
+        filter_pcb.set_name("Kicad PCB files")
+        filter_pcb.add_pattern("*.kicad_pcb")
+        dialog.add_filter(filter_pcb)
+
+    def on_file_clicked(self, arg):
+        dialog = Gtk.FileChooserDialog(title="Open kicad PCB file", parent=self,
+                                       action=Gtk.FileChooserAction.OPEN,
+                                       buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                                                Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        self.add_filters(dialog)
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            self.board.load_board_file(dialog.get_filename())
+            self.populate_editor()
+        elif response == Gtk.ResponseType.CANCEL:
+            pass
+
+        dialog.destroy()
+
+    def add_save_filters(self, dialog):
+        filter_pdf = Gtk.FileFilter()
+        filter_pdf.set_name("PDF files")
+        filter_pdf.add_pattern("*.pdf")
+        dialog.add_filter(filter_pdf)
+
+    def on_plot_clicked(self, arg):
+        dialog = Gtk.FileChooserDialog(title="Save stackup report file", parent=self,
+                                       action=Gtk.FileChooserAction.SAVE,
+                                       buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                                                Gtk.STOCK_SAVE, Gtk.ResponseType.OK))
+        self.add_save_filters(dialog)
+        dialog.set_do_overwrite_confirmation(True)
+        dialog.set_current_name(os.path.splitext(os.path.basename(self.board.board_file))[0]+".pdf")
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            self.viewer.save_stackup_file(dialog.get_filename())
+        elif response == Gtk.ResponseType.CANCEL:
+            pass
+
+        dialog.destroy()
+
+if __name__=="__main__":
+    options = {"--help": {"value": None, "arg": NO_ARG, "description": "prints help message"},
+               "--pcb": {"value": None, "arg": MANDATORY_ARG, "description": "pcb file path"}}
+    parse_options(sys.argv[1:], options)
+    if options["--help"]["value"] == True:
+        print_options(options)
+        exit(1)
+        
+    pcb_file = None
+    if options["--pcb"]["value"] != None:
+        pcb_file = options["--pcb"]["value"]
+    window = KiStackupEditor(pcb_file)
+    #viewer = KiStackupViewer()
+#    window.add(viewer)
+    window.connect_after('destroy', Gtk.main_quit)
+    window.show_all()
+    Gtk.main()
