@@ -697,8 +697,6 @@ if __name__=="__main__":
     if options["--pcb"]["value"] != None:
         pcb_file = options["--pcb"]["value"]
     window = KiStackupEditor(pcb_file)
-    #viewer = KiStackupViewer()
-#    window.add(viewer)
     window.connect_after('destroy', Gtk.main_quit)
     window.show_all()
     Gtk.main()

@@ -1,0 +1,5 @@
+[archive.main.int]
+fqdn = archive.main.int
+method = scp
+login = ppa
+incoming = /srv/deb-repositories/archive/local-testing/incoming

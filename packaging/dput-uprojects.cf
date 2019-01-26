@@ -1,0 +1,5 @@
+[uprojects.org]
+fqdn = uprojects.org
+method = scp
+login = ppa
+incoming = /srv/ppa/holter/incoming
