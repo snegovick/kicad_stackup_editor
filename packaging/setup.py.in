@@ -17,7 +17,6 @@ setup(
     license = "MIT",
     keywords = "KiCAD, stackup, CAD",
     url = "http://snegovick.me",
-    packages=['kicad-stackup-editor'],
     scripts=["kicad-stackup-editor"],
     long_description=read('README.md'),
     dependency_links = [],
