@@ -239,7 +239,7 @@ class KiStackupViewer(Gtk.DrawingArea):
             cr.line_to(x+w/10+w/20, y)
             cr.line_to(x+w/10+w/20, y-h/2)
             cr.line_to(x, y-h/2)
-            
+
         cr.close_path()
         cr.stroke()
 
@@ -307,7 +307,7 @@ class KiStackupViewer(Gtk.DrawingArea):
         cr.line_to(x+2*w/5, y-h/3)
         cr.close_path()
         cr.stroke()
-        
+
         cr.move_to(x+3*w/5, y-h/3)
         cr.line_to(x+3*w/5, y-2*h/3)
         cr.line_to(x+4*w/5, y-2*h/3)
@@ -422,7 +422,7 @@ class KiStackupViewer(Gtk.DrawingArea):
 
         name_max_w = cols[1]
 
-        
+
         for l in range(n_layers):
             cr.move_to(x, y+yoffset*(l+1))
             cr.line_to(x, y+yoffset*(l))
@@ -556,11 +556,11 @@ class KiStackupEditor(Gtk.Window):
         filem.set_submenu(filemenu)
 
         #openm = Gtk.MenuItem(label="_Open")
-        
+
         acgroup = Gtk.AccelGroup()
         self.add_accel_group(acgroup)
         openm = Gtk.MenuItem(label="Open")
-        openm.add_accelerator("activate", acgroup, ord('O'), 
+        openm.add_accelerator("activate", acgroup, ord('O'),
                               Gdk.ModifierType.CONTROL_MASK, Gtk.AccelFlags.VISIBLE)
         openm.connect("activate", self.on_file_clicked)
         filemenu.append(openm)
@@ -572,7 +572,7 @@ class KiStackupEditor(Gtk.Window):
         exitm = Gtk.MenuItem(label="Exit")
         exitm.connect("activate", Gtk.main_quit)
         filemenu.append(exitm)
-        
+
         mb.append(filem)
 
         vbox = Gtk.VBox(homogeneous=False, spacing=2)
@@ -590,7 +590,7 @@ class KiStackupEditor(Gtk.Window):
         self.editor_vbox = Gtk.VBox(homogeneous=False, spacing=2)
         hbox.pack_start(self.editor_vbox, True, True, 4)
         self.hbox = hbox
-        
+
         if (kicad_pcb_file != None):
             self.board.load_board_file(kicad_pcb_file)
             self.populate_editor()
@@ -639,7 +639,7 @@ class KiStackupEditor(Gtk.Window):
             self.viewer.queue_draw()
         except:
             entry.set_text("")
-            
+
     def add_filters(self, dialog):
         filter_pcb = Gtk.FileFilter()
         filter_pcb.set_name("Kicad PCB files")
@@ -687,16 +687,23 @@ class KiStackupEditor(Gtk.Window):
 
 if __name__=="__main__":
     options = {"--help": {"value": None, "arg": NO_ARG, "description": "prints help message"},
-               "--pcb": {"value": None, "arg": MANDATORY_ARG, "description": "pcb file path"}}
+               "--pcb": {"value": None, "arg": MANDATORY_ARG, "description": "pcb file path"},
+               "--out": {"value": None, "arg": OPT_ARG, "description": "output pdf file path"}}
     parse_options(sys.argv[1:], options)
     if options["--help"]["value"] == True:
         print_options(options)
         exit(1)
-        
+
     pcb_file = None
     if options["--pcb"]["value"] != None:
         pcb_file = options["--pcb"]["value"]
+
     window = KiStackupEditor(pcb_file)
-    window.connect_after('destroy', Gtk.main_quit)
-    window.show_all()
-    Gtk.main()
+
+    if options["--out"]["value"] != None:
+        out_file = options["--out"]["value"]
+        window.viewer.save_stackup_file(out_file)
+    else:
+        window.connect_after('destroy', Gtk.main_quit)
+        window.show_all()
+        Gtk.main()
