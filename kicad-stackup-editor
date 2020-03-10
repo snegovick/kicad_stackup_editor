@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import gi
 gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk
+
 gi.require_version('PangoCairo', '1.0')
-from gi.repository import Gtk, Gdk, Pango, PangoCairo
+from gi.repository import Pango, PangoCairo
 
 import cairo
 gi.require_foreign('cairo')
@@ -152,10 +154,9 @@ class Board:
                 return layers
         return layers
 
-class KiStackupViewer(Gtk.DrawingArea):
+class KiStackupDrawing(object):
     def __init__(self, board):
         self.board = board
-        Gtk.DrawingArea.__init__(self)
         self.layer_h = 45
         self.left_margin=60
         self.right_margin=10
@@ -178,14 +179,11 @@ class KiStackupViewer(Gtk.DrawingArea):
 
         self.table_cols=[self.char_w*5, self.char_w*13, self.char_w*13, self.char_w*16]
         self.table_cols_names = ["#", "Layer name", "Type", "Thickness, mm"]
-
         self.table_w = sum(self.table_cols)
+
         self.table_right_margin=10
         self.rqw = self.body_w+self.left_margin+self.right_margin+self.table_w+self.table_right_margin
         self.rqh = self.layer_h*4
-
-        self.set_size_request(self.rqw, self.rqh)
-        self.connect('draw', self.draw_cb)
         self.outline_width = 1
 
     def recalc_size_request(self):
@@ -315,7 +313,6 @@ class KiStackupViewer(Gtk.DrawingArea):
         cr.close_path()
         cr.stroke()
 
-
     def draw_cu(self, cr, is_top, x, y, w, h):
 
         cr.set_line_width(1)
@@ -421,15 +418,8 @@ class KiStackupViewer(Gtk.DrawingArea):
         cr.restore()
 
         name_max_w = cols[1]
-
         
         for l in range(n_layers):
-            cr.move_to(x, y+yoffset*(l+1))
-            cr.line_to(x, y+yoffset*(l))
-            cr.line_to(x+w, y+yoffset*(l))
-            cr.line_to(x+w, y+yoffset*(l+1))
-            cr.stroke()
-
             xofft = x
             layout.set_text("%i"%(l+1), -1)
             PangoCairo.update_layout (cr, layout)
@@ -470,6 +460,15 @@ class KiStackupViewer(Gtk.DrawingArea):
             PangoCairo.show_layout (cr, layout)
             cr.restore()
             xofft+=cols[3]
+            self.recalc_size_request()
+            w = self.table_w
+
+            cr.save()
+            cr.move_to(x, y+yoffset*(l+1))
+            cr.line_to(x, y+yoffset*(l))
+            cr.line_to(x+self.table_w, y+yoffset*(l))
+            cr.stroke()
+            cr.restore()
 
         xofft = x
         for i, cn in enumerate(cols_names):
@@ -485,22 +484,22 @@ class KiStackupViewer(Gtk.DrawingArea):
             cr.line_to(xofft, y+h)
             cr.stroke()
 
-        self.recalc_size_request()
-        self.set_size_request(self.rqw, self.rqh)
         cr.set_line_width(1)
         cr.set_source_rgb(0.1, 0.1, 0.1)
         yoffset = h/n_layers
+        # top
         cr.move_to(x, y)
         cr.line_to(x, y-yoffset)
-        cr.line_to(x+w, y-yoffset)
-        cr.line_to(x+w, y)
+        cr.line_to(x+self.table_w, y-yoffset)
+        cr.line_to(x+self.table_w, y)
+        cr.stroke()
 
-
+        #bottom
         cr.move_to(x, y+h)
         cr.line_to(x+w, y+h)
         cr.stroke()
 
-    def draw_cb(self, widget, cr, preview=True):
+    def draw_all(self, cr, preview=True):
         if self.board.is_loaded == False:
             return
 
@@ -541,8 +540,20 @@ class KiStackupViewer(Gtk.DrawingArea):
         a4h_in = a4h/25.4
         surface = cairo.PDFSurface(filename, a4h_in*1.5*72, a4w_in*1.5*72)
         ctx = cairo.Context(surface)
-        self.draw_cb(None, ctx, False)
+        self.draw_all(ctx, False)
         ctx.show_page()
+
+class KiStackupViewer(Gtk.DrawingArea):
+    def __init__(self, board):
+        self.drawing = KiStackupDrawing(board)
+        Gtk.DrawingArea.__init__(self)
+
+        self.set_size_request(self.drawing.rqw, self.drawing.rqh)
+        self.connect('draw', self.draw_cb)
+
+    def draw_cb(self, widget, cr, preview=True):
+        self.drawing.draw_all(cr, preview)
+        self.set_size_request(self.drawing.rqw, self.drawing.rqh)
 
 class KiStackupEditor(Gtk.Window):
     def __init__(self, kicad_pcb_file):
@@ -679,7 +690,7 @@ class KiStackupEditor(Gtk.Window):
 
         response = dialog.run()
         if response == Gtk.ResponseType.OK:
-            self.viewer.save_stackup_file(dialog.get_filename())
+            self.viewer.drawing.save_stackup_file(dialog.get_filename())
         elif response == Gtk.ResponseType.CANCEL:
             pass
 
@@ -687,7 +698,8 @@ class KiStackupEditor(Gtk.Window):
 
 if __name__=="__main__":
     options = {"--help": {"value": None, "arg": NO_ARG, "description": "prints help message"},
-               "--pcb": {"value": None, "arg": MANDATORY_ARG, "description": "pcb file path"}}
+               "--pcb": {"value": None, "arg": MANDATORY_ARG, "description": "pcb file path"},
+               "--output": {"value": None, "arg": MANDATORY_ARG, "description": "output PDF file path. If this argument is set, then program runs headless."}}
     parse_options(sys.argv[1:], options)
     if options["--help"]["value"] == True:
         print_options(options)
@@ -696,7 +708,18 @@ if __name__=="__main__":
     pcb_file = None
     if options["--pcb"]["value"] != None:
         pcb_file = options["--pcb"]["value"]
-    window = KiStackupEditor(pcb_file)
-    window.connect_after('destroy', Gtk.main_quit)
-    window.show_all()
-    Gtk.main()
+
+    if options["--output"]["value"] != None:
+        if (pcb_file == None):
+            print("PCB file must be set")
+            exit(1)
+        board = Board()
+        board.load_board_file(pcb_file)
+        output_file = options["--output"]["value"]
+        drawing = KiStackupDrawing(board)
+        drawing.save_stackup_file(output_file)
+    else:
+        window = KiStackupEditor(pcb_file)
+        window.connect_after('destroy', Gtk.main_quit)
+        window.show_all()
+        Gtk.main()
